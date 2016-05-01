@@ -6,7 +6,6 @@ import java.io.IOException;
 import java.io.InputStreamReader;
 import java.io.OutputStreamWriter;
 import java.io.PrintWriter;
-import java.io.StringReader;
 import java.net.InetAddress;
 import java.net.ServerSocket;
 import java.net.Socket;
@@ -14,8 +13,10 @@ import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.Arrays;
 import java.util.Formatter;
+import java.util.HashMap;
 import java.util.Iterator;
 import java.util.LinkedList;
+import java.util.Map;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.Executor;
 import java.util.concurrent.Executors;
@@ -43,26 +44,33 @@ public class SimpleDynamoProvider extends ContentProvider {
     private static final String KEYVALUE_TABLE_NAME = "dynamo";
     private static final int SERVER_PORT = 10000;
     private static final String MSG_REQUEST_TYPE = "MSG_REQUEST_TYPE";
-    private static final String SENDER_PORT = "SENDER_PORT";
     private static final String INSERT = "INSERT";
-    private static final String INSERT_REPLICA = "INSERT_REPLICA";
     private static final String SUCCESS = "SUCCESS";
     private static final String QUERY = "QUERY";
     private static final String QUERY_ALL = "QUERY_ALL";
+    private static final String DELETE = "DELETE";
     private static final String FORWARDING_PORT = "FORWARDING_PORT";
+    private static final String SENDER_PORT = "SENDER_PORT";
+    private static final String GET_REPLICAS = "GET_REPLICAS";
     private static final String KEY = "key";
     private static final String VALUE = "value";
+    private static final String VERSION = "version";
     private static final String STAR_SIGN = "*";
     private static final String AT_SIGN = "@";
     private static final String PROVIDER_URI = "content://edu.buffalo.cse.cse486586.simpledynamo.provider";
     private static LinkedList<String> ringFormation = new LinkedList<String>(Arrays.asList("5562","5556","5554","5558","5560"));
+    private static String[] avd = {"5562","5556","5554","5558","5560"};
+    private static int readSuccCount;
+    private static int writeSuccCount;
 
     private SQLiteDatabase database;
 
     private static String serverPort;
 
 
-    private Executor myExec = Executors.newSingleThreadExecutor();
+    //private Executor myExec = Executors.newSingleThreadExecutor();
+    private Executor myExec = Executors.newFixedThreadPool(15);
+    private Executor myExec2 = Executors.newFixedThreadPool(15);
 
     public static class KeyValueOpenHelper extends SQLiteOpenHelper {
 
@@ -103,6 +111,52 @@ public class SimpleDynamoProvider extends ContentProvider {
     @Override
     public int delete(Uri uri, String selection, String[] selectionArgs) {
         // TODO Auto-generated method stub
+        if (STAR_SIGN.equals(selection) || AT_SIGN.equals(selection)) {
+            myDelete(uri,selection);
+        }
+        else{
+            try {
+                String coordinatorPort = getLocInRingAsPort(selection);
+                JSONObject jsonObject = new JSONObject();
+                jsonObject.put(KEY, selection);
+                Log.d(TAG, "query: Query ONLY for : " + selection);
+                jsonObject.put(MSG_REQUEST_TYPE, DELETE);
+
+                jsonObject.put(FORWARDING_PORT, coordinatorPort);
+                AsyncTask<String, String, String> coordinatorT = new ClientTask();
+                coordinatorT.executeOnExecutor(myExec, jsonObject.toString());
+
+                jsonObject.put(FORWARDING_PORT, getSucc(coordinatorPort));
+                AsyncTask<String, String, String> succT = new ClientTask();
+                succT.executeOnExecutor(myExec, jsonObject.toString());
+
+                jsonObject.put(FORWARDING_PORT, getSucc(getSucc(coordinatorPort)));
+                AsyncTask<String, String, String> succSuccT = new ClientTask();
+                succSuccT.executeOnExecutor(myExec, jsonObject.toString());
+
+                String coordRetVal = coordinatorT.get();
+                Log.d(TAG, "query: DELETE status from "+coordinatorPort+" is: "+coordRetVal);
+
+                String coordSuccRetVal = succT.get();
+                Log.d(TAG, "query: DELETE status from "+getSucc(coordinatorPort)+" is: "+coordSuccRetVal);
+
+                String coordSuccSuccRetVal = succSuccT.get();
+                Log.d(TAG, "query: DELETE status from " + getSucc(getSucc(coordinatorPort)) + " is: " + coordSuccSuccRetVal);
+
+            }catch (JSONException e) {
+                e.printStackTrace();
+            } catch (InterruptedException e) {
+                e.printStackTrace();
+            } catch (ExecutionException e) {
+                e.printStackTrace();
+            }
+
+        }
+
+        return 0;
+    }
+
+    public int myDelete(Uri uri, String selection){
 
         Log.d(TAG, "delete: uri: " + uri + " selection: " + selection);
 
@@ -129,22 +183,42 @@ public class SimpleDynamoProvider extends ContentProvider {
 		Log.d(TAG, "insert: Got Key: " + key + " value: " + value);
 
 		try {
-            if(getLocInRingAsPort(key).equals(serverPort)){
+/*            if(getLocInRingAsPort(key).equals(serverPort)){
                 Log.d(TAG, "insert: Location to store key in the ring is in this AVD");
+                writeSuccCount = 0;
                 Uri retUri = myInsert(uri,values);
+                Log.d(TAG, "insert: Local INSERT SUCCESSFUL");
+                writeSuccCount++;
                 JSONObject jsonObject = new JSONObject();
-                jsonObject.put(MSG_REQUEST_TYPE,INSERT_REPLICA);
+                jsonObject.put(MSG_REQUEST_TYPE,INSERT);
                 jsonObject.put(KEY,key);
                 jsonObject.put(VALUE,value);
 
                 String succ = getSucc(serverPort);
                 jsonObject.put(FORWARDING_PORT,succ);
-                new ClientTask().executeOnExecutor(myExec, jsonObject.toString());  //replica 1
+                //new ClientTask().executeOnExecutor(myExec, jsonObject.toString());  //replica 1
 
+                AsyncTask<String,String,String> asyncTask =new ClientTask();
+                asyncTask.executeOnExecutor(AsyncTask.THREAD_POOL_EXECUTOR, jsonObject.toString());
+                String retVal = asyncTask.get();
+                if(SUCCESS.equals(retVal)){
+                    Log.d(TAG, "insert: INSERT REPLICA 1 SUCCESSFUL");
+                    writeSuccCount++;
+                }
+                if(writeSuccCount == 2){
+                    Log.d(TAG, "insert: Satisfied Write Condition: "+writeSuccCount);
+                    return retUri;
+                }
                 String succSucc = getSucc(succ);
                 jsonObject.put(FORWARDING_PORT,succSucc);
-                new ClientTask().executeOnExecutor(myExec, jsonObject.toString());  //replica 2
-
+                //new ClientTask().executeOnExecutor(myExec, jsonObject.toString());  //replica 2
+                AsyncTask<String,String,String> asyncTask2 =new ClientTask();
+                asyncTask2.executeOnExecutor(AsyncTask.THREAD_POOL_EXECUTOR, jsonObject.toString());
+                retVal = asyncTask2.get();
+                if(SUCCESS.equals(retVal)){
+                    Log.d(TAG, "insert: INSERT REPLICA 2 SUCCESSFUL");
+                    writeSuccCount++;
+                }
                 return retUri;
             }
             else{
@@ -154,13 +228,82 @@ public class SimpleDynamoProvider extends ContentProvider {
                 jsonObject.put(KEY,key);
                 jsonObject.put(VALUE,value);
                 jsonObject.put(FORWARDING_PORT,forwardingPort);
+                Log.d(TAG, "insert: Forwarding INSERT request to: "+forwardingPort);
                 new ClientTask().executeOnExecutor(myExec, jsonObject.toString());
+//                AsyncTask<String,String,String> asyncTask =new ClientTask();
+//                asyncTask.executeOnExecutor(myExec, jsonObject.toString());
+//                Log.d(TAG, "insert: asyncTask status before get(): "+asyncTask.getStatus());
+//                String retVal = asyncTask.get();
+//                Log.d(TAG, "insert: asyncTask status after get(): "+asyncTask.getStatus());
+//                if(retVal.equals(SUCCESS)){
+//                    Log.d(TAG, "insert: INSERT SUCCESSFUL");
+//                }
             }
+            */
+
+            writeSuccCount = 0;
+            String coordPort = getLocInRingAsPort(key);
+            Log.d(TAG, "insert: Forward the request to: "+coordPort);
+            JSONObject jsonObject = new JSONObject();
+            jsonObject.put(MSG_REQUEST_TYPE, INSERT);
+            jsonObject.put(KEY,key);
+            jsonObject.put(VALUE,value);
+            jsonObject.put(FORWARDING_PORT,coordPort);
+
+            AsyncTask<String,String,String> asyncTask =new ClientTask();
+            asyncTask.executeOnExecutor(AsyncTask.THREAD_POOL_EXECUTOR, jsonObject.toString());
+
+
+            String succ = getSucc(coordPort);
+            jsonObject.put(FORWARDING_PORT,succ);
+
+            //new ClientTask().executeOnExecutor(myExec, jsonObject.toString());  //replica 1
+            AsyncTask<String,String,String> asyncTask1 =new ClientTask();
+            asyncTask1.executeOnExecutor(AsyncTask.THREAD_POOL_EXECUTOR, jsonObject.toString());
+
+
+            String succSucc = getSucc(succ);
+            jsonObject.put(FORWARDING_PORT,succSucc);
+
+            //new ClientTask().executeOnExecutor(myExec, jsonObject.toString());  //replica 2
+            AsyncTask<String,String,String> asyncTask2 =new ClientTask();
+            asyncTask2.executeOnExecutor(AsyncTask.THREAD_POOL_EXECUTOR, jsonObject.toString());
+
+
+            String retVal = asyncTask.get();
+            if(SUCCESS.equals(retVal)){
+                Log.d(TAG, "insert: INSERT IN COORDINATOR SUCCESSFUL");
+                writeSuccCount++;
+            }
+
+            retVal = asyncTask1.get();
+            if(SUCCESS.equals(retVal)){
+                Log.d(TAG, "insert: INSERT REPLICA 1 SUCCESSFUL");
+                writeSuccCount++;
+            }
+
+            if(writeSuccCount == 2){
+                Log.d(TAG, "insert: Satisfied Write Condition: "+writeSuccCount);
+                return uri;
+            }
+
+
+            retVal = asyncTask2.get();
+            if(SUCCESS.equals(retVal)){
+                Log.d(TAG, "insert: INSERT REPLICA 2 SUCCESSFUL");
+                writeSuccCount++;
+            }
+            return uri;
+
 		}catch (JSONException e) {
 			e.printStackTrace();
-		}
+		} catch (InterruptedException e) {
+            e.printStackTrace();
+        } catch (ExecutionException e) {
+            e.printStackTrace();
+        }
 
-		return null;
+        return null;
 	}
 
     public Uri myInsert(Uri uri, ContentValues values) {
@@ -186,7 +329,9 @@ public class SimpleDynamoProvider extends ContentProvider {
         if (getContext() != null) {
             TelephonyManager tel = (TelephonyManager) getContext().getSystemService(Context.TELEPHONY_SERVICE);
             String portStr = tel.getLine1Number().substring(tel.getLine1Number().length() - 4);
+            Log.d(TAG, "onCreate: portStr: "+portStr);
             serverPort = String.valueOf(Integer.parseInt(portStr) * 2);
+            Log.d(TAG, "onCreate: Setting serverPort: "+serverPort);
 
             try {
 
@@ -201,6 +346,90 @@ public class SimpleDynamoProvider extends ContentProvider {
         KeyValueOpenHelper kVHelper = new KeyValueOpenHelper(context);
         database = kVHelper.getWritableDatabase();
 
+
+        String pred1 = getPred(serverPort);
+        String pred2 = getPred(pred1);
+        String succ1 = getSucc(serverPort);
+        String succ2 = getSucc(succ1);
+
+        JSONObject jsonObject = new JSONObject();
+        try {
+            jsonObject.put(MSG_REQUEST_TYPE, QUERY);
+            jsonObject.put(KEY,AT_SIGN);
+            jsonObject.put(FORWARDING_PORT,pred1);
+            Log.d(TAG, "onCreate: Reconciling from: "+pred1);
+            AsyncTask<String,String,String> asyncTask =new ClientTask();
+            asyncTask.executeOnExecutor(myExec, jsonObject.toString());
+
+            jsonObject.put(FORWARDING_PORT,pred2);
+            Log.d(TAG, "onCreate: Reconciling from: "+pred2);
+            AsyncTask<String,String,String> asyncTask2 =new ClientTask();
+            asyncTask2.executeOnExecutor(myExec, jsonObject.toString());
+
+            jsonObject.put(FORWARDING_PORT,succ1);
+            Log.d(TAG, "onCreate: Reconciling from: "+succ1);
+            AsyncTask<String,String,String> asyncTask3 =new ClientTask();
+            asyncTask3.executeOnExecutor(myExec, jsonObject.toString());
+
+            jsonObject.put(FORWARDING_PORT,succ2);
+            Log.d(TAG, "onCreate: Reconciling from: "+succ2);
+            AsyncTask<String,String,String> asyncTask4 =new ClientTask();
+            asyncTask4.executeOnExecutor(myExec, jsonObject.toString());
+
+
+            String retPred1Value = asyncTask.get();
+            Log.d(TAG, "onCreate: retPred1Value: "+retPred1Value);
+            Log.d(TAG, "onCreate: asyncTask status: "+asyncTask.getStatus());
+
+            if(retPred1Value != null) {
+                JSONArray pred1Arr = new JSONArray(retPred1Value);
+                Log.d(TAG, "onCreate: pred1Arr: "+pred1Arr);
+                insertFromHashMap(getEntriesForPort(pred1Arr,getPred(serverPort)));
+            }
+
+            String retPred2Value = asyncTask2.get();
+            Log.d(TAG, "onCreate: retPred2Value: "+retPred2Value);
+            Log.d(TAG, "onCreate: asyncTask2 status: "+asyncTask2.getStatus());
+            if(retPred2Value != null) {
+                JSONArray pred2Arr = new JSONArray(retPred2Value);
+                Log.d(TAG, "onCreate: pred2Arr: "+pred2Arr);
+                insertFromHashMap(getEntriesForPort(pred2Arr,getPred(getPred(serverPort))));
+            }
+
+
+
+            String retSucc1Value = asyncTask3.get();
+            Log.d(TAG, "onCreate: retSucc1Value: "+retSucc1Value);
+            Log.d(TAG, "onCreate: asyncTask3 status: "+asyncTask3.getStatus());
+            if(retSucc1Value != null) {
+                JSONArray succ1Arr = new JSONArray(retSucc1Value);
+                Log.d(TAG, "onCreate: succ1Arr: "+succ1Arr);
+                insertFromHashMap(getEntriesForPort(succ1Arr,serverPort));
+                insertFromHashMap(getEntriesForPort(succ1Arr,getPred(serverPort)));
+
+            }
+
+            String retSucc2Value = asyncTask4.get();
+            Log.d(TAG, "onCreate: retSucc2Value: "+retSucc2Value);
+            Log.d(TAG, "onCreate: asyncTask4 status: "+asyncTask4.getStatus());
+            if(retSucc2Value != null) {
+                JSONArray succ2Arr = new JSONArray(retSucc2Value);
+                Log.d(TAG, "onCreate: succ2Arr: "+succ2Arr);
+                insertFromHashMap(getEntriesForPort(succ2Arr,serverPort));
+            }
+
+
+
+
+
+        } catch (JSONException e) {
+            e.printStackTrace();
+        } catch (InterruptedException e) {
+            e.printStackTrace();
+        } catch (ExecutionException e) {
+            e.printStackTrace();
+        }
+
         return database != null;
     }
 
@@ -214,6 +443,65 @@ public class SimpleDynamoProvider extends ContentProvider {
         } else if(STAR_SIGN.equals(selection)){
             Log.d(TAG, "query: Reached STAR_SIGN: "+serverPort);
             try {
+                /*
+                JSONArray jsonArrRes = new JSONArray();
+                String retVal;
+                JSONObject jsonObject = new JSONObject();
+                jsonObject.put(KEY, STAR_SIGN);
+                jsonObject.put(MSG_REQUEST_TYPE, QUERY);
+
+                jsonObject.put(FORWARDING_PORT, avd[0]);
+                AsyncTask<String,String,String> avdT0 =new ClientTask();
+                avdT0.executeOnExecutor(myExec2, jsonObject.toString());
+
+                jsonObject.put(FORWARDING_PORT, avd[1]);
+                AsyncTask<String,String,String> avdT1 =new ClientTask();
+                avdT1.executeOnExecutor(myExec, jsonObject.toString());
+
+                jsonObject.put(FORWARDING_PORT, avd[2]);
+                AsyncTask<String,String,String> avdT2 =new ClientTask();
+                avdT2.executeOnExecutor(myExec, jsonObject.toString());
+
+                jsonObject.put(FORWARDING_PORT, avd[3]);
+                AsyncTask<String,String,String> avdT3 =new ClientTask();
+                avdT3.executeOnExecutor(myExec, jsonObject.toString());
+
+                jsonObject.put(FORWARDING_PORT, avd[4]);
+                AsyncTask<String,String,String> avdT4 =new ClientTask();
+                avdT4.executeOnExecutor(myExec, jsonObject.toString());
+
+                retVal = avdT0.get();
+                Log.d(TAG, "query: avdT0.get(): "+retVal);
+                if(retVal != null){
+                    jsonArrRes = concatArray(new JSONArray(retVal),jsonArrRes);
+                }
+                retVal = avdT1.get();
+                Log.d(TAG, "query: avdT1.get(): "+retVal);
+                if(retVal != null){
+                    jsonArrRes = concatArray(new JSONArray(retVal),jsonArrRes);
+                }
+
+                retVal = avdT2.get();
+                Log.d(TAG, "query: avdT2.get(): "+retVal);
+                if(retVal != null){
+                    jsonArrRes = concatArray(new JSONArray(retVal),jsonArrRes);
+                }
+
+                retVal = avdT3.get();
+                Log.d(TAG, "query: avdT3.get(): "+retVal);
+                if(retVal != null){
+                    jsonArrRes = concatArray(new JSONArray(retVal),jsonArrRes);
+                }
+
+                retVal = avdT4.get();
+                Log.d(TAG, "query: avdT4.get(): "+retVal);
+                if(retVal != null){
+                    jsonArrRes = concatArray(new JSONArray(retVal),jsonArrRes);
+                }
+                return jsonArr2MatrixCursor(new JSONArray(jsonArrRes));
+                */
+
+
                 JSONObject jsonObject = new JSONObject();
                 jsonObject.put(KEY, selection);
                 jsonObject.put(MSG_REQUEST_TYPE, QUERY_ALL);
@@ -227,6 +515,7 @@ public class SimpleDynamoProvider extends ContentProvider {
                 Log.d(TAG, "query: "+ a.getStatus());
                 Log.d(TAG, "query: a.get(): "+s);
                 return jsonArr2MatrixCursor(new JSONArray(s));
+
             } catch (JSONException e) {
                 e.printStackTrace();
             } catch (InterruptedException e) {
@@ -237,21 +526,53 @@ public class SimpleDynamoProvider extends ContentProvider {
         } else{
             Log.d(TAG, "query: Reached ELSE case: "+serverPort);
             try {
-                String forwardingPort = getLocInRingAsPort(selection);
+                readSuccCount = 0;
+                String coordinatorPort = getLocInRingAsPort(selection);
                 JSONObject jsonObject = new JSONObject();
                 jsonObject.put(KEY, selection);
+                Log.d(TAG, "query: Query ONLY for : "+selection);
                 jsonObject.put(MSG_REQUEST_TYPE, QUERY);
-                jsonObject.put(FORWARDING_PORT, forwardingPort);
-                jsonObject.put(SENDER_PORT, serverPort);
-                Cursor cursor = myQuery(uri,selection);
-                Log.d(TAG, "query: Executing client task");
-                AsyncTask<String,String,String> a =new ClientTask();
-                a.executeOnExecutor(myExec, jsonObject.toString());
-                Log.d(TAG, "query: "+ a.getStatus());
-                String s = a.get();
-                Log.d(TAG, "query: "+ a.getStatus());
-                Log.d(TAG, "query: a.get(): "+s);
-                return jsonArr2MatrixCursor(new JSONArray(s));
+                jsonObject.put(FORWARDING_PORT, coordinatorPort);
+                //Cursor cursor = myQuery(uri,selection);
+                AsyncTask<String,String,String> coordinatorT =new ClientTask();
+                coordinatorT.executeOnExecutor(myExec, jsonObject.toString());
+
+                jsonObject.put(FORWARDING_PORT, getSucc(coordinatorPort));
+                AsyncTask<String,String,String> succT =new ClientTask();
+                succT.executeOnExecutor(myExec, jsonObject.toString());
+
+                jsonObject.put(FORWARDING_PORT, getSucc(getSucc(coordinatorPort)));
+                AsyncTask<String,String,String> succSuccT =new ClientTask();
+                succSuccT.executeOnExecutor(myExec, jsonObject.toString());
+
+
+
+                String coordRetVal = coordinatorT.get();
+                Log.d(TAG, "query: Return value from "+coordinatorPort+" is: "+coordRetVal);
+                if(coordRetVal != null){
+                    readSuccCount++;
+                }
+
+                String coordSuccRetVal = succT.get();
+                Log.d(TAG, "query: Return value from "+getSucc(coordinatorPort)+" is: "+coordSuccRetVal);
+                if(coordSuccRetVal != null){
+                    readSuccCount++;
+                }
+                if(readSuccCount == 2){
+                    return jsonArr2MatrixCursor(new JSONArray(coordRetVal));
+                }
+
+                String coordSuccSuccRetVal = succSuccT.get();
+                Log.d(TAG, "query: Return value from "+getSucc(getSucc(coordinatorPort))+" is: "+coordSuccSuccRetVal);
+                if(coordSuccSuccRetVal != null) {
+                    return jsonArr2MatrixCursor(new JSONArray(coordSuccSuccRetVal));
+                }
+                else if(coordRetVal != null){
+                    return jsonArr2MatrixCursor(new JSONArray(coordRetVal));
+                }
+                else if(coordSuccRetVal != null){
+                    return jsonArr2MatrixCursor(new JSONArray(coordSuccRetVal));
+                }
             } catch (JSONException e) {
                 e.printStackTrace();
             } catch (InterruptedException e) {
@@ -278,7 +599,7 @@ public class SimpleDynamoProvider extends ContentProvider {
         if (getContext() != null) {
             cursor.setNotificationUri(getContext().getContentResolver(), uri);
         }
-        Log.d(TAG, "myQuery: cursor: " + cursor);
+        Log.d(TAG, "myQuery: cursor No of rows: " + cursor.getCount());
         return cursor;
     }
 
@@ -314,6 +635,37 @@ public class SimpleDynamoProvider extends ContentProvider {
 
     }
 
+    private JSONArray cur2JsonClean(Cursor cursor) throws JSONException{
+
+        JSONArray resultSet = new JSONArray();
+        if(cursor.getCount() <= 0){
+            return resultSet;
+        }
+        cursor.moveToFirst();
+
+        while (!cursor.isAfterLast()) {
+            int totalColumn = cursor.getColumnCount();
+            int keyIndex = cursor.getColumnIndex(KEY);
+            String key = cursor.getString(keyIndex);
+            if(getLocInRingAsPort(key).equals(serverPort)){
+                cursor.moveToNext();
+                continue;
+            }
+            JSONObject rowObject = new JSONObject();
+            for (int i = 0; i < totalColumn; i++) {
+                if (cursor.getColumnName(i) != null) {
+                    rowObject.put(cursor.getColumnName(i),
+                            cursor.getString(i));
+                }
+            }
+            resultSet.put(rowObject);
+            cursor.moveToNext();
+        }
+
+        return resultSet;
+
+    }
+
     private JSONArray concatArray(JSONArray arr1, JSONArray arr2)
             throws JSONException {
         JSONArray result = new JSONArray();
@@ -324,6 +676,68 @@ public class SimpleDynamoProvider extends ContentProvider {
             result.put(arr2.get(i));
         }
         return result;
+    }
+/*
+    private HashMap<String,String> intersectJSONArray(JSONArray arr1, JSONArray arr2) throws JSONException{
+        HashMap<String,String> hm1 = new HashMap<String, String>();
+        HashMap<String,String> hm2 = new HashMap<String, String>();
+        HashMap<String,String> result = new HashMap<String, String>();
+        for (int i = 0; i < arr1.length(); i++) {
+            JSONObject jsonObject = arr1.getJSONObject(i);
+            hm1.put(jsonObject.getString(KEY),jsonObject.getString(VALUE));
+        }
+        for (int i = 0; i < arr2.length(); i++) {
+            JSONObject jsonObject = arr2.getJSONObject(i);
+            hm2.put(jsonObject.getString(KEY),jsonObject.getString(VALUE));
+        }
+        for(Map.Entry<String,String> entry : hm1.entrySet()){
+            String key = entry.getKey();
+            String value = entry.getValue();
+            if(hm2.containsKey(key)){
+                result.put(key,value);
+            }
+        }
+
+        return result;
+    }
+
+    private HashMap<String,String> getRemEntries(HashMap<String,String> hmInter,JSONArray jsonArray) throws JSONException{
+        HashMap<String,String> result = new HashMap<String, String>();
+        for (int i = 0; i < jsonArray.length(); i++) {
+            JSONObject jsonObject = jsonArray.getJSONObject(i);
+            String key = jsonObject.getString(KEY);
+            String value = jsonObject.getString(VALUE);
+            if(!hmInter.containsKey(key)){
+                result.put(key,value);
+            }
+        }
+
+        return result;
+    }
+*/
+
+    private HashMap<String,String> getEntriesForPort(JSONArray jsonArray, String port) throws JSONException{
+        HashMap<String,String> result = new HashMap<String, String>();
+        for (int i = 0; i < jsonArray.length(); i++) {
+            JSONObject jsonObject = jsonArray.getJSONObject(i);
+            String key = jsonObject.getString(KEY);
+            String value = jsonObject.getString(VALUE);
+            if(getLocInRingAsPort(key).equals(port)){
+                result.put(key,value);
+            }
+        }
+
+        return result;
+    }
+
+    private void insertFromHashMap(HashMap<String, String> hm){
+
+        for(Map.Entry<String, String> entry: hm.entrySet()){
+            ContentValues contentValues = new ContentValues();
+            contentValues.put(KEY,entry.getKey());
+            contentValues.put(VALUE,entry.getValue());
+            myInsert(Uri.parse(PROVIDER_URI), contentValues);
+        }
     }
 
     private String genHash(String input) throws NoSuchAlgorithmException {
@@ -351,7 +765,6 @@ public class SimpleDynamoProvider extends ContentProvider {
         String prev = it.next();
         while(it.hasNext()){
             curr = it.next();
-            System.out.println("prev: "+prev+" curr: "+curr);
             try {
                 if(genHash(key).compareTo(genHash(prev)) > 0 && genHash(key).compareTo(genHash(curr)) < 0){
                     return getPortFromID(curr);
@@ -433,23 +846,13 @@ public class SimpleDynamoProvider extends ContentProvider {
 
                     if(INSERT.equals(msg_request_type)){
                         ContentValues contentValues = new ContentValues();
-                        contentValues.put(KEY,msgJsonObj.getString(KEY));
-                        contentValues.put(VALUE,msgJsonObj.getString(VALUE));
-                        insert(Uri.parse(PROVIDER_URI),contentValues);
-
-                        PrintWriter out = new PrintWriter(socket.getOutputStream(), true);
-                        out.println(SUCCESS);
-                        Log.d(TAG, "doInBackground: Writing back INSERT SUCCESS from: "+serverPort);
-                    }
-                    else if(INSERT_REPLICA.equals(msg_request_type)){
-                        ContentValues contentValues = new ContentValues();
                         contentValues.put("key",msgJsonObj.getString(KEY));
                         contentValues.put("value",msgJsonObj.getString(VALUE));
                         myInsert(Uri.parse(PROVIDER_URI), contentValues);
 
                         PrintWriter out = new PrintWriter(socket.getOutputStream(), true);
                         out.println(SUCCESS);
-                        Log.d(TAG, "doInBackground: Writing back INSERT_REPLICA SUCCESS from: "+serverPort);
+                        Log.d(TAG, "doInBackground: Writing back INSERT SUCCESS from: "+serverPort);
 
                     } else if(QUERY_ALL.equals(msg_request_type)){
                         Log.d(TAG, "doInBackground: ServerTask: "+serverPort);
@@ -462,11 +865,12 @@ public class SimpleDynamoProvider extends ContentProvider {
                             jsonObject.put(KEY,msgJsonObj.getString(KEY));
                             jsonObject.put(MSG_REQUEST_TYPE, QUERY);
                             jsonObject.put(FORWARDING_PORT, getPortFromID(emulID));
-                            jsonObject.put(SENDER_PORT,msgJsonObj.getString(SENDER_PORT));
 
-                            Log.d(TAG, "doInBackground: Inside IF condition");
+
                             if(!getPortFromID(emulID).equals(serverPort)) {
+                                Log.d(TAG, "doInBackground: Inside IF condition");
                                 Socket socketForw = new Socket(InetAddress.getByAddress(new byte[]{10, 0, 2, 2}), Integer.parseInt(jsonObject.getString(FORWARDING_PORT)));
+                                socketForw.setSoTimeout(1500);
                                 PrintWriter out = new PrintWriter(socketForw.getOutputStream(), true);
                                 out.println(jsonObject);
                                 Log.d(TAG, "doInBackground: Writing " + jsonObject + " to " + jsonObject.getString(FORWARDING_PORT));
@@ -475,8 +879,16 @@ public class SimpleDynamoProvider extends ContentProvider {
                                 BufferedReader retInput = new BufferedReader(new InputStreamReader(socketForw.getInputStream()));
                                 String retValue = retInput.readLine();
                                 Log.d(TAG, "doInBackground: Read value: " + retValue);
-                                jsonArray = new JSONArray(retValue);
-                                Log.d(TAG, "doInBackground: Converting to jsonArray: " + jsonArray);
+                                if(retValue != null) {
+                                    jsonArray = new JSONArray(retValue);
+                                    Log.d(TAG, "doInBackground: Converting to jsonArray: " + jsonArray);
+                                }
+                                else{
+                                    jsonArray = new JSONArray();
+                                }
+                                socketForw.close();
+                                out.close();
+                                retInput.close();
                             }
                             else{
                                 Log.d(TAG, "doInBackground: Querying local AVD ");
@@ -503,10 +915,19 @@ public class SimpleDynamoProvider extends ContentProvider {
                         out.println(cur2Json(cursor).toString());
                         Log.d(TAG, "doInBackground: Writing back from: "+serverPort);
 
+                    } else if(DELETE.equals(msg_request_type)){
+
+                        PrintWriter out = new PrintWriter(socket.getOutputStream(), true);
+                        int i = myDelete(Uri.parse(PROVIDER_URI),msgJsonObj.getString(KEY));
+                        if(i == 0) {
+                            out.println(SUCCESS);
+                        }
+                        Log.d(TAG, "doInBackground: Writing back from: "+serverPort);
+
                     }
 
                 } catch (IOException e) {
-                    Log.d(TAG, e.toString());
+                    e.printStackTrace();
                 } catch (JSONException e) {
                     e.printStackTrace();
                 }
@@ -535,15 +956,16 @@ public class SimpleDynamoProvider extends ContentProvider {
         @Override
         protected String doInBackground(String... msgs) {
             String m = msgs[0];
-            Log.d(TAG, "doInBackground: This is client " + m);
+            //Log.d(TAG, "doInBackground: This is client " + m);
             try {
                 JSONObject jsonObject = new JSONObject(m);
                 String request_type = jsonObject.getString(MSG_REQUEST_TYPE);
 
-                if(INSERT.equals(request_type) || INSERT_REPLICA.equals(request_type)){
+                if(INSERT.equals(request_type)){
                     Log.d(TAG, "doInBackground: Sending REQUEST_TYPE: " + request_type + " to: " + jsonObject.getString(FORWARDING_PORT));
 
                     Socket socket = new Socket(InetAddress.getByAddress(new byte[]{10, 0, 2, 2}), Integer.parseInt(jsonObject.getString(FORWARDING_PORT)));
+                    socket.setSoTimeout(1500);
                     PrintWriter out = new PrintWriter(socket.getOutputStream(), true);
                     out.println(m);
                     Log.d(TAG, "doInBackground: Writing "+m+" to "+jsonObject.getString(FORWARDING_PORT));
@@ -551,12 +973,18 @@ public class SimpleDynamoProvider extends ContentProvider {
                     BufferedReader input = new BufferedReader(new InputStreamReader(socket.getInputStream()));
                     String retValue = input.readLine();
                     Log.d(TAG, "doInBackground: Returned value from Server [" + jsonObject.getString(FORWARDING_PORT) + "]" + " is: " + retValue);
+
+                    socket.close();
+                    out.close();
+                    input.close();
+
                     return retValue;
 
                 } else if(QUERY_ALL.equals(request_type)){
                     Log.d(TAG, "doInBackground: Sending REQUEST_TYPE: " + request_type + " to: " + jsonObject.getString(FORWARDING_PORT));
 
                     Socket socket = new Socket(InetAddress.getByAddress(new byte[]{10, 0, 2, 2}), Integer.parseInt(jsonObject.getString(FORWARDING_PORT)));
+                    //socket.setSoTimeout(1000);
                     PrintWriter out = new PrintWriter(socket.getOutputStream(), true);
                     out.println(m);
 
@@ -572,12 +1000,17 @@ public class SimpleDynamoProvider extends ContentProvider {
                     JSONArray jsonArray = new JSONArray(retValue);
                     Log.d(TAG, "doInBackground: Converting to jsonArray: "+jsonArray);
 
+                    socket.close();
+                    out.close();
+                    input.close();
+
                     return jsonArray.toString();
 
                 } else if(QUERY.equals(request_type)){
                     Log.d(TAG, "doInBackground: Sending REQUEST_TYPE: " + request_type + " to: " + jsonObject.getString(FORWARDING_PORT));
 
                     Socket socket = new Socket(InetAddress.getByAddress(new byte[]{10, 0, 2, 2}), Integer.parseInt(jsonObject.getString(FORWARDING_PORT)));
+                    socket.setSoTimeout(1500);
                     PrintWriter out = new PrintWriter(socket.getOutputStream(), true);
                     out.println(m);
 
@@ -587,6 +1020,32 @@ public class SimpleDynamoProvider extends ContentProvider {
                     BufferedReader input = new BufferedReader(new InputStreamReader(socket.getInputStream()));
                     String retValue = input.readLine();
                     Log.d(TAG, "doInBackground: Returned value from Server [" + jsonObject.getString(FORWARDING_PORT) + "]" + " is: " + retValue);
+
+                    socket.close();
+                    out.close();
+                    input.close();
+
+                    return retValue;
+
+                } else if(DELETE.equals(request_type)){
+                    Log.d(TAG, "doInBackground: Sending REQUEST_TYPE: " + request_type + " to: " + jsonObject.getString(FORWARDING_PORT));
+
+                    Socket socket = new Socket(InetAddress.getByAddress(new byte[]{10, 0, 2, 2}), Integer.parseInt(jsonObject.getString(FORWARDING_PORT)));
+                    socket.setSoTimeout(1500);
+                    PrintWriter out = new PrintWriter(socket.getOutputStream(), true);
+                    out.println(m);
+
+                    Log.d(TAG, "doInBackground: Writing " + m + " to " + jsonObject.getString(FORWARDING_PORT));
+
+
+                    BufferedReader input = new BufferedReader(new InputStreamReader(socket.getInputStream()));
+                    String retValue = input.readLine();
+                    Log.d(TAG, "doInBackground: Returned value from Server [" + jsonObject.getString(FORWARDING_PORT) + "]" + " is: " + retValue);
+
+                    socket.close();
+                    out.close();
+                    input.close();
+
                     return retValue;
 
                 }
