@@ -14,6 +14,7 @@ import java.security.NoSuchAlgorithmException;
 import java.util.Arrays;
 import java.util.Formatter;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.Iterator;
 import java.util.LinkedList;
 import java.util.Map;
@@ -58,6 +59,7 @@ public class SimpleDynamoProvider extends ContentProvider {
     private static final String STAR_SIGN = "*";
     private static final String AT_SIGN = "@";
     private static final String PROVIDER_URI = "content://edu.buffalo.cse.cse486586.simpledynamo.provider";
+    public static final int TIMEOUT_VALUE = 3000;
     private static LinkedList<String> ringFormation = new LinkedList<String>(Arrays.asList("5562","5556","5554","5558","5560"));
     private static String[] avd = {"5562","5556","5554","5558","5560"};
     private static int readSuccCount;
@@ -70,7 +72,7 @@ public class SimpleDynamoProvider extends ContentProvider {
 
     //private Executor myExec = Executors.newSingleThreadExecutor();
     private Executor myExec = Executors.newFixedThreadPool(15);
-    private Executor myExec2 = Executors.newFixedThreadPool(15);
+    //private Executor myExec2 = Executors.newFixedThreadPool(15);
 
     public static class KeyValueOpenHelper extends SQLiteOpenHelper {
 
@@ -549,21 +551,22 @@ public class SimpleDynamoProvider extends ContentProvider {
 
                 String coordRetVal = coordinatorT.get();
                 Log.d(TAG, "query: Return value from "+coordinatorPort+" is: "+coordRetVal);
-                if(coordRetVal != null){
+                if(coordRetVal != null && new JSONArray(coordRetVal).length() != 0){
                     readSuccCount++;
                 }
 
                 String coordSuccRetVal = succT.get();
                 Log.d(TAG, "query: Return value from "+getSucc(coordinatorPort)+" is: "+coordSuccRetVal);
-                if(coordSuccRetVal != null){
+                if(coordSuccRetVal != null && new JSONArray(coordSuccRetVal).length() != 0){
                     readSuccCount++;
                 }
-                if(readSuccCount == 2){
-                    return jsonArr2MatrixCursor(new JSONArray(coordRetVal));
-                }
+//                if(readSuccCount == 2){
+//                    return jsonArr2MatrixCursor(new JSONArray(coordRetVal));
+//                }
 
                 String coordSuccSuccRetVal = succSuccT.get();
                 Log.d(TAG, "query: Return value from "+getSucc(getSucc(coordinatorPort))+" is: "+coordSuccSuccRetVal);
+                /*
                 if(coordSuccSuccRetVal != null) {
                     return jsonArr2MatrixCursor(new JSONArray(coordSuccSuccRetVal));
                 }
@@ -573,6 +576,25 @@ public class SimpleDynamoProvider extends ContentProvider {
                 else if(coordSuccRetVal != null){
                     return jsonArr2MatrixCursor(new JSONArray(coordSuccRetVal));
                 }
+                */
+                if(coordSuccSuccRetVal != null && coordRetVal != null && coordSuccRetVal != null) {
+                    JSONArray concatJSONArr;
+                    concatJSONArr = concatArray(new JSONArray(coordSuccSuccRetVal), new JSONArray(coordRetVal));
+                    concatJSONArr = concatArray(concatJSONArr,new JSONArray(coordSuccRetVal));
+                    concatJSONArr = getMaxValueforKey(concatJSONArr);
+                    return jsonArr2MatrixCursor(concatJSONArr);
+                }
+
+                if(coordSuccSuccRetVal != null) {
+                    return jsonArr2MatrixCursor(new JSONArray(coordSuccSuccRetVal));
+                }
+                else if(coordRetVal != null){
+                    return jsonArr2MatrixCursor(new JSONArray(coordRetVal));
+                }
+                else if(coordSuccRetVal != null){
+                    return jsonArr2MatrixCursor(new JSONArray(coordSuccRetVal));
+                }
+
             } catch (JSONException e) {
                 e.printStackTrace();
             } catch (InterruptedException e) {
@@ -824,6 +846,29 @@ public class SimpleDynamoProvider extends ContentProvider {
         return mc;
     }
 
+    private JSONArray getMaxValueforKey(JSONArray jsonArray) throws JSONException {
+
+        String key = jsonArray.getJSONObject(0).getString(KEY);
+        String value = jsonArray.getJSONObject(0).getString(VALUE);
+        HashSet<String> hs = new HashSet<String>();
+
+        for(int i=0; i < jsonArray.length(); i++){
+            value = jsonArray.getJSONObject(i).getString(VALUE);
+            if(hs.contains(value)){
+                break;
+            }else{
+                hs.add(value);
+            }
+        }
+
+        JSONObject jsonObject = new JSONObject();
+        jsonObject.put(KEY,key);
+        jsonObject.put(VALUE,value);
+
+        return new JSONArray().put(jsonObject);
+
+    }
+
     private class ServerTask extends AsyncTask<ServerSocket, String, Void> {
         private final String TAG = this.getClass().getSimpleName();
 
@@ -870,7 +915,7 @@ public class SimpleDynamoProvider extends ContentProvider {
                             if(!getPortFromID(emulID).equals(serverPort)) {
                                 Log.d(TAG, "doInBackground: Inside IF condition");
                                 Socket socketForw = new Socket(InetAddress.getByAddress(new byte[]{10, 0, 2, 2}), Integer.parseInt(jsonObject.getString(FORWARDING_PORT)));
-                                socketForw.setSoTimeout(1500);
+                                //socketForw.setSoTimeout(TIMEOUT_VALUE);
                                 PrintWriter out = new PrintWriter(socketForw.getOutputStream(), true);
                                 out.println(jsonObject);
                                 Log.d(TAG, "doInBackground: Writing " + jsonObject + " to " + jsonObject.getString(FORWARDING_PORT));
@@ -911,8 +956,9 @@ public class SimpleDynamoProvider extends ContentProvider {
 
                         PrintWriter out = new PrintWriter(socket.getOutputStream(), true);
                         Cursor cursor = myQuery(Uri.parse(PROVIDER_URI),msgJsonObj.getString(KEY));
-                        Log.d(TAG, "doInBackground: JSON_ARRAY: "+cur2Json(cursor).toString());
-                        out.println(cur2Json(cursor).toString());
+                        String retValue = cur2Json(cursor).toString();
+                        Log.d(TAG, "doInBackground: JSON_ARRAY: "+ retValue);
+                        out.println(retValue);
                         Log.d(TAG, "doInBackground: Writing back from: "+serverPort);
 
                     } else if(DELETE.equals(msg_request_type)){
@@ -965,7 +1011,7 @@ public class SimpleDynamoProvider extends ContentProvider {
                     Log.d(TAG, "doInBackground: Sending REQUEST_TYPE: " + request_type + " to: " + jsonObject.getString(FORWARDING_PORT));
 
                     Socket socket = new Socket(InetAddress.getByAddress(new byte[]{10, 0, 2, 2}), Integer.parseInt(jsonObject.getString(FORWARDING_PORT)));
-                    socket.setSoTimeout(1500);
+                    socket.setSoTimeout(TIMEOUT_VALUE);
                     PrintWriter out = new PrintWriter(socket.getOutputStream(), true);
                     out.println(m);
                     Log.d(TAG, "doInBackground: Writing "+m+" to "+jsonObject.getString(FORWARDING_PORT));
@@ -984,7 +1030,7 @@ public class SimpleDynamoProvider extends ContentProvider {
                     Log.d(TAG, "doInBackground: Sending REQUEST_TYPE: " + request_type + " to: " + jsonObject.getString(FORWARDING_PORT));
 
                     Socket socket = new Socket(InetAddress.getByAddress(new byte[]{10, 0, 2, 2}), Integer.parseInt(jsonObject.getString(FORWARDING_PORT)));
-                    //socket.setSoTimeout(1000);
+                    //socket.setSoTimeout(TIMEOUT_VALUE);
                     PrintWriter out = new PrintWriter(socket.getOutputStream(), true);
                     out.println(m);
 
@@ -1010,7 +1056,7 @@ public class SimpleDynamoProvider extends ContentProvider {
                     Log.d(TAG, "doInBackground: Sending REQUEST_TYPE: " + request_type + " to: " + jsonObject.getString(FORWARDING_PORT));
 
                     Socket socket = new Socket(InetAddress.getByAddress(new byte[]{10, 0, 2, 2}), Integer.parseInt(jsonObject.getString(FORWARDING_PORT)));
-                    socket.setSoTimeout(1500);
+                    socket.setSoTimeout(TIMEOUT_VALUE);
                     PrintWriter out = new PrintWriter(socket.getOutputStream(), true);
                     out.println(m);
 
@@ -1031,7 +1077,7 @@ public class SimpleDynamoProvider extends ContentProvider {
                     Log.d(TAG, "doInBackground: Sending REQUEST_TYPE: " + request_type + " to: " + jsonObject.getString(FORWARDING_PORT));
 
                     Socket socket = new Socket(InetAddress.getByAddress(new byte[]{10, 0, 2, 2}), Integer.parseInt(jsonObject.getString(FORWARDING_PORT)));
-                    socket.setSoTimeout(1500);
+                    socket.setSoTimeout(TIMEOUT_VALUE);
                     PrintWriter out = new PrintWriter(socket.getOutputStream(), true);
                     out.println(m);
 
