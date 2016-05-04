@@ -14,7 +14,6 @@ import java.security.NoSuchAlgorithmException;
 import java.util.Arrays;
 import java.util.Formatter;
 import java.util.HashMap;
-import java.util.HashSet;
 import java.util.Iterator;
 import java.util.LinkedList;
 import java.util.Map;
@@ -84,7 +83,8 @@ public class SimpleDynamoProvider extends ContentProvider {
         private static final String KEYVALUE_TABLE_CREATE =
                 "CREATE TABLE " + KEYVALUE_TABLE_NAME + " (" +
                         KEY + " TEXT PRIMARY KEY, " +
-                        VALUE + " TEXT);";
+                        VALUE + " TEXT, " +
+                        VERSION + " INTEGER);";
 
         KeyValueOpenHelper(Context context) {
             super(context, DATABASE_NAME, null, DATABASE_VERSION);
@@ -177,7 +177,7 @@ public class SimpleDynamoProvider extends ContentProvider {
 
 	@Override
 	public Uri insert(Uri uri, ContentValues values) {
-		Log.d(TAG, "insert: " + "ContentValues: " + values + ", " + "Uri: " + uri.toString());
+		//Log.d(TAG, "insert: " + "ContentValues: " + values + ", " + "Uri: " + uri.toString());
 
 		String key = values.getAsString("key");
 		String value = values.getAsString("value");
@@ -309,7 +309,7 @@ public class SimpleDynamoProvider extends ContentProvider {
 	}
 
     public Uri myInsert(Uri uri, ContentValues values) {
-        Log.d(TAG, "insert: Should be stored in current AVD");
+        Log.d(TAG, "myInsert: key: "+ values.getAsString(KEY)+" value: "+values.getAsString(VALUE));
 
         long row = database.insertWithOnConflict(KEYVALUE_TABLE_NAME, "", values, SQLiteDatabase.CONFLICT_REPLACE);
         Log.d(TAG, "insert: row: " + row);
@@ -383,19 +383,28 @@ public class SimpleDynamoProvider extends ContentProvider {
             Log.d(TAG, "onCreate: retPred1Value: "+retPred1Value);
             Log.d(TAG, "onCreate: asyncTask status: "+asyncTask.getStatus());
 
+            JSONArray pred1Arr;
+            JSONArray pred1Arr1 = new JSONArray();
+            JSONArray pred1Arr2 = new JSONArray();
+            JSONArray pred2Arr = new JSONArray();
+            JSONArray succ1Arr1 = new JSONArray();
+            JSONArray succ1Arr2 = new JSONArray();
+            JSONArray succ2Arr = new JSONArray();
+
             if(retPred1Value != null) {
-                JSONArray pred1Arr = new JSONArray(retPred1Value);
-                Log.d(TAG, "onCreate: pred1Arr: "+pred1Arr);
-                insertFromHashMap(getEntriesForPort(pred1Arr,getPred(serverPort)));
+                pred1Arr = new JSONArray(retPred1Value);
+                Log.d(TAG, "onCreate: pred1Arr: " + pred1Arr);
+                pred1Arr1 = getEntriesForPort(pred1Arr,getPred(serverPort));
+                pred1Arr2 = getEntriesForPort(pred1Arr,getPred(getPred(serverPort)));
             }
 
             String retPred2Value = asyncTask2.get();
             Log.d(TAG, "onCreate: retPred2Value: "+retPred2Value);
             Log.d(TAG, "onCreate: asyncTask2 status: "+asyncTask2.getStatus());
             if(retPred2Value != null) {
-                JSONArray pred2Arr = new JSONArray(retPred2Value);
-                Log.d(TAG, "onCreate: pred2Arr: "+pred2Arr);
-                insertFromHashMap(getEntriesForPort(pred2Arr,getPred(getPred(serverPort))));
+                pred2Arr = new JSONArray(retPred2Value);
+                Log.d(TAG, "onCreate: pred2Arr: " + pred2Arr);
+                pred2Arr = getEntriesForPort(pred2Arr,getPred(getPred(serverPort)));
             }
 
 
@@ -404,10 +413,10 @@ public class SimpleDynamoProvider extends ContentProvider {
             Log.d(TAG, "onCreate: retSucc1Value: "+retSucc1Value);
             Log.d(TAG, "onCreate: asyncTask3 status: "+asyncTask3.getStatus());
             if(retSucc1Value != null) {
-                JSONArray succ1Arr = new JSONArray(retSucc1Value);
-                Log.d(TAG, "onCreate: succ1Arr: "+succ1Arr);
-                insertFromHashMap(getEntriesForPort(succ1Arr,serverPort));
-                insertFromHashMap(getEntriesForPort(succ1Arr,getPred(serverPort)));
+                succ1Arr1 = new JSONArray(retSucc1Value);
+                Log.d(TAG, "onCreate: succ1Arr: "+succ1Arr1);
+                succ1Arr1 = getEntriesForPort(succ1Arr1,serverPort);
+                succ1Arr2 = getEntriesForPort(new JSONArray(retSucc1Value),getPred(serverPort));
 
             }
 
@@ -415,14 +424,17 @@ public class SimpleDynamoProvider extends ContentProvider {
             Log.d(TAG, "onCreate: retSucc2Value: "+retSucc2Value);
             Log.d(TAG, "onCreate: asyncTask4 status: "+asyncTask4.getStatus());
             if(retSucc2Value != null) {
-                JSONArray succ2Arr = new JSONArray(retSucc2Value);
+                succ2Arr = new JSONArray(retSucc2Value);
                 Log.d(TAG, "onCreate: succ2Arr: "+succ2Arr);
-                insertFromHashMap(getEntriesForPort(succ2Arr,serverPort));
+                succ2Arr = getEntriesForPort(succ2Arr,serverPort);
             }
-
-
-
-
+            JSONArray concatArr = concatArray(pred1Arr1,pred1Arr2);
+            JSONArray concatArr1 = concatArray(concatArr,pred2Arr);
+            JSONArray concatArr2 = concatArray(succ1Arr1,succ1Arr2);
+            concatArr2 = concatArray(concatArr2,succ2Arr);
+            concatArr = concatArray(concatArr1,concatArr2);
+            Log.d(TAG, "onCreate: concatArr: "+concatArr);
+            specialInsert(concatArr);
 
         } catch (JSONException e) {
             e.printStackTrace();
@@ -441,7 +453,11 @@ public class SimpleDynamoProvider extends ContentProvider {
 
         if(AT_SIGN.equals(selection)) {
             Log.d(TAG, "query: Reached AT_SIGN: "+serverPort);
-            return myQuery(uri, selection);
+            try {
+                return jsonArr2MatrixCursor(cur2Json(myQuery(uri, selection)));
+            } catch (JSONException e) {
+                e.printStackTrace();
+            }
         } else if(STAR_SIGN.equals(selection)){
             Log.d(TAG, "query: Reached STAR_SIGN: "+serverPort);
             try {
@@ -577,22 +593,36 @@ public class SimpleDynamoProvider extends ContentProvider {
                     return jsonArr2MatrixCursor(new JSONArray(coordSuccRetVal));
                 }
                 */
-                if(coordSuccSuccRetVal != null && coordRetVal != null && coordSuccRetVal != null) {
-                    JSONArray concatJSONArr;
-                    concatJSONArr = concatArray(new JSONArray(coordSuccSuccRetVal), new JSONArray(coordRetVal));
-                    concatJSONArr = concatArray(concatJSONArr,new JSONArray(coordSuccRetVal));
-                    concatJSONArr = getMaxValueforKey(concatJSONArr);
-                    return jsonArr2MatrixCursor(concatJSONArr);
-                }
+//                if(coordSuccSuccRetVal != null && coordRetVal != null && coordSuccRetVal != null) {
+//                    JSONArray concatJSONArr;
+//                    concatJSONArr = concatArray(new JSONArray(coordSuccSuccRetVal), new JSONArray(coordRetVal));
+//                    concatJSONArr = concatArray(concatJSONArr,new JSONArray(coordSuccRetVal));
+//                    concatJSONArr = getLatestWrite(concatJSONArr);
+//                    return jsonArr2MatrixCursor(concatJSONArr);
+//                }
 
-                if(coordSuccSuccRetVal != null) {
-                    return jsonArr2MatrixCursor(new JSONArray(coordSuccSuccRetVal));
-                }
-                else if(coordRetVal != null){
-                    return jsonArr2MatrixCursor(new JSONArray(coordRetVal));
-                }
-                else if(coordSuccRetVal != null){
-                    return jsonArr2MatrixCursor(new JSONArray(coordSuccRetVal));
+//                if(coordSuccSuccRetVal != null) {
+//                    return jsonArr2MatrixCursor(new JSONArray(coordSuccSuccRetVal));
+//                }
+//                else if(coordRetVal != null){
+//                    return jsonArr2MatrixCursor(new JSONArray(coordRetVal));
+//                }
+//                else if(coordSuccRetVal != null){
+//                    return jsonArr2MatrixCursor(new JSONArray(coordSuccRetVal));
+//                }
+
+                if(coordRetVal != null && coordSuccRetVal != null) {
+                    JSONArray concatJSONArr = concatArray(new JSONArray(coordRetVal), new JSONArray(coordSuccRetVal));
+                    concatJSONArr = getLatestWrite(concatJSONArr);
+                    return jsonArr2MatrixCursor(concatJSONArr);
+                } else if(coordRetVal != null && coordSuccSuccRetVal != null){
+                    JSONArray concatJSONArr = concatArray(new JSONArray(coordRetVal), new JSONArray(coordSuccSuccRetVal));
+                    concatJSONArr = getLatestWrite(concatJSONArr);
+                    return jsonArr2MatrixCursor(concatJSONArr);
+                } else if(coordSuccRetVal != null && coordSuccSuccRetVal != null){
+                    JSONArray concatJSONArr = concatArray(new JSONArray(coordSuccRetVal), new JSONArray(coordSuccSuccRetVal));
+                    concatJSONArr = getLatestWrite(concatJSONArr);
+                    return jsonArr2MatrixCursor(concatJSONArr);
                 }
 
             } catch (JSONException e) {
@@ -604,6 +634,7 @@ public class SimpleDynamoProvider extends ContentProvider {
             }
 
         }
+        Log.d(TAG, "query: Incorrect execution(Exception)");
         return myQuery(uri,selection);
     }
 
@@ -623,6 +654,24 @@ public class SimpleDynamoProvider extends ContentProvider {
         }
         Log.d(TAG, "myQuery: cursor No of rows: " + cursor.getCount());
         return cursor;
+    }
+
+    private int getVersionforKey(String key){
+        Log.d(TAG, "getVersionforKey: KEY: " + key);
+
+        String sql = "SELECT "+VERSION+" FROM "+KEYVALUE_TABLE_NAME+" WHERE "+KEY+"="+"'"+key+"'";
+        Log.d(TAG, "getVersionforKey: sql: "+sql);
+        Cursor cursor = database.rawQuery(sql, null);
+        if(cursor.getCount() <= 0){
+            return -1;
+        }else {
+            int verIndex = cursor.getColumnIndex(VERSION);
+            Log.d(TAG, "getVersionforKey: verIndex: "+verIndex);
+            cursor.moveToFirst();
+            int verNum = cursor.getInt(verIndex);
+            Log.d(TAG, "getVersionforKey: verNum: "+verNum);
+            return verNum;
+        }
     }
 
 	@Override
@@ -737,7 +786,7 @@ public class SimpleDynamoProvider extends ContentProvider {
         return result;
     }
 */
-
+    /*
     private HashMap<String,String> getEntriesForPort(JSONArray jsonArray, String port) throws JSONException{
         HashMap<String,String> result = new HashMap<String, String>();
         for (int i = 0; i < jsonArray.length(); i++) {
@@ -751,6 +800,26 @@ public class SimpleDynamoProvider extends ContentProvider {
 
         return result;
     }
+    */
+    private JSONArray getEntriesForPort(JSONArray jsonArray, String port) throws JSONException{
+        JSONArray result = new JSONArray();
+        for (int i = 0; i < jsonArray.length(); i++) {
+            JSONObject jsonObject = jsonArray.getJSONObject(i);
+            JSONObject jsonObject1 = new JSONObject();
+            Log.d(TAG, "getEntriesForPort: jsonObject: "+jsonObject);
+            String key = jsonObject.getString(KEY);
+            String value = jsonObject.getString(VALUE);
+            String ver = jsonObject.getString(VERSION);
+            if(getLocInRingAsPort(key).equals(port)){
+                jsonObject1.put(KEY, key);
+                jsonObject1.put(VALUE, value);
+                jsonObject1.put(VERSION, ver);
+                result.put(jsonObject1);
+            }
+        }
+
+        return result;
+    }
 
     private void insertFromHashMap(HashMap<String, String> hm){
 
@@ -758,8 +827,49 @@ public class SimpleDynamoProvider extends ContentProvider {
             ContentValues contentValues = new ContentValues();
             contentValues.put(KEY,entry.getKey());
             contentValues.put(VALUE,entry.getValue());
+            int ver = getVersionforKey(entry.getKey());
+            contentValues.put(VERSION, ver+1);
             myInsert(Uri.parse(PROVIDER_URI), contentValues);
         }
+    }
+
+    private void specialInsert(JSONArray jsonArray) throws JSONException{
+        Log.d(TAG, "specialInsert: jsonArray: "+jsonArray);
+        HashMap<String, Integer> hashMap = new HashMap<String, Integer>();
+        for(int i = 0; i < jsonArray.length(); i++){
+            JSONObject jsonObject = jsonArray.getJSONObject(i);
+            Log.d(TAG, "specialInsert: jsonObject: "+jsonObject);
+            String key = jsonObject.getString(KEY);
+            String verString = jsonObject.getString(VERSION);
+            Integer verNum = Integer.parseInt(verString);
+            if(hashMap.containsKey(key)){
+                if(verNum > hashMap.get(key)){
+                    hashMap.put(key,verNum);
+                    Log.d(TAG, "specialInsert: Updating version in hashMap for key: "+key+" to: "+verNum);
+                }
+            }else{
+                hashMap.put(key,verNum);
+            }
+        }
+
+        for (int i = 0; i < jsonArray.length(); i++) {
+            JSONObject jsonObject = jsonArray.getJSONObject(i);
+            String key = jsonObject.getString(KEY);
+            String value = jsonObject.getString(VALUE);
+            String verString = jsonObject.getString(VERSION);
+            Integer verNum = Integer.parseInt(verString);
+            if(hashMap.get(key).equals(verNum)){
+                ContentValues contentValues = new ContentValues();
+                contentValues.put(KEY,key);
+                contentValues.put(VALUE,value);
+                contentValues.put(VERSION,verNum);
+                if(getVersionforKey(key) < verNum) {
+                    myInsert(Uri.parse(PROVIDER_URI), contentValues);
+                }
+            }
+
+        }
+
     }
 
     private String genHash(String input) throws NoSuchAlgorithmException {
@@ -846,27 +956,62 @@ public class SimpleDynamoProvider extends ContentProvider {
         return mc;
     }
 
-    private JSONArray getMaxValueforKey(JSONArray jsonArray) throws JSONException {
+//    private JSONArray getLatestWrite(JSONArray jsonArray) throws JSONException {
+//
+//        String key = jsonArray.getJSONObject(0).getString(KEY);
+//        String value = jsonArray.getJSONObject(0).getString(VALUE);
+//        HashSet<String> hs = new HashSet<String>();
+//
+//        for(int i=0; i < jsonArray.length(); i++){
+//            value = jsonArray.getJSONObject(i).getString(VALUE);
+//            if(hs.contains(value)){
+//                break;
+//            }else{
+//                hs.add(value);
+//            }
+//        }
+//
+//        JSONObject jsonObject = new JSONObject();
+//        jsonObject.put(KEY,key);
+//        jsonObject.put(VALUE,value);
+//
+//        return new JSONArray().put(jsonObject);
+//
+//    }
 
-        String key = jsonArray.getJSONObject(0).getString(KEY);
-        String value = jsonArray.getJSONObject(0).getString(VALUE);
-        HashSet<String> hs = new HashSet<String>();
+    private JSONArray getLatestWrite(JSONArray jsonArray) throws JSONException {
 
-        for(int i=0; i < jsonArray.length(); i++){
-            value = jsonArray.getJSONObject(i).getString(VALUE);
-            if(hs.contains(value)){
-                break;
+        Log.d(TAG, "getLatestWrite: jsonArray: "+jsonArray);
+        JSONArray result = new JSONArray();
+        HashMap<String, Integer> hashMap = new HashMap<String, Integer>();
+        for(int i = 0; i < jsonArray.length(); i++){
+            JSONObject jsonObject = jsonArray.getJSONObject(i);
+            String key = jsonObject.getString(KEY);
+            String verString = jsonObject.getString(VERSION);
+            Integer verNum = Integer.parseInt(verString);
+            if(hashMap.containsKey(key)){
+                if(verNum > hashMap.get(key)){
+                    hashMap.put(key, verNum);
+                    Log.d(TAG, "getLatestWrite: updating max version for key: "+key+" to: "+verNum);
+                }
             }else{
-                hs.add(value);
+                hashMap.put(key,verNum);
             }
         }
 
-        JSONObject jsonObject = new JSONObject();
-        jsonObject.put(KEY,key);
-        jsonObject.put(VALUE,value);
+        for (int i = 0; i < jsonArray.length(); i++) {
+            JSONObject jsonObject = jsonArray.getJSONObject(i);
+            String key = jsonObject.getString(KEY);
+            String verString = jsonObject.getString(VERSION);
+            Integer verNum = Integer.parseInt(verString);
+            if(hashMap.get(key).equals(verNum)){
+                result.put(jsonObject);
+                break;
+            }
 
-        return new JSONArray().put(jsonObject);
-
+        }
+        Log.d(TAG, "getLatestWrite: returning: "+result);
+        return result;
     }
 
     private class ServerTask extends AsyncTask<ServerSocket, String, Void> {
@@ -892,7 +1037,9 @@ public class SimpleDynamoProvider extends ContentProvider {
                     if(INSERT.equals(msg_request_type)){
                         ContentValues contentValues = new ContentValues();
                         contentValues.put("key",msgJsonObj.getString(KEY));
-                        contentValues.put("value",msgJsonObj.getString(VALUE));
+                        contentValues.put("value", msgJsonObj.getString(VALUE));
+                        int ver = getVersionforKey(msgJsonObj.getString(KEY));
+                        contentValues.put(VERSION, ver+1);
                         myInsert(Uri.parse(PROVIDER_URI), contentValues);
 
                         PrintWriter out = new PrintWriter(socket.getOutputStream(), true);
