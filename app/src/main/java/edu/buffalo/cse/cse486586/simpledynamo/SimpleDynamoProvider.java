@@ -635,12 +635,13 @@ public class SimpleDynamoProvider extends ContentProvider {
 
         }
         Log.d(TAG, "query: Incorrect execution(Exception)");
+        JSONArray result = new JSONArray();
         try {
-            return jsonArr2MatrixCursor(cur2Json(myQuery(uri, selection)));
+            result = cur2Json(myQuery(uri, selection));
         } catch (JSONException e) {
             e.printStackTrace();
         }
-        return null;
+        return jsonArr2MatrixCursor(result);
     }
 
     private Cursor myQuery(Uri uri,String selection){
