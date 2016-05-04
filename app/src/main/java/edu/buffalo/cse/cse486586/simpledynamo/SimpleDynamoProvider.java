@@ -635,7 +635,12 @@ public class SimpleDynamoProvider extends ContentProvider {
 
         }
         Log.d(TAG, "query: Incorrect execution(Exception)");
-        return myQuery(uri,selection);
+        try {
+            return jsonArr2MatrixCursor(cur2Json(myQuery(uri, selection)));
+        } catch (JSONException e) {
+            e.printStackTrace();
+        }
+        return null;
     }
 
     private Cursor myQuery(Uri uri,String selection){
@@ -660,13 +665,13 @@ public class SimpleDynamoProvider extends ContentProvider {
         Log.d(TAG, "getVersionforKey: KEY: " + key);
 
         String sql = "SELECT "+VERSION+" FROM "+KEYVALUE_TABLE_NAME+" WHERE "+KEY+"="+"'"+key+"'";
-        Log.d(TAG, "getVersionforKey: sql: "+sql);
+        //Log.d(TAG, "getVersionforKey: sql: "+sql);
         Cursor cursor = database.rawQuery(sql, null);
         if(cursor.getCount() <= 0){
             return -1;
         }else {
             int verIndex = cursor.getColumnIndex(VERSION);
-            Log.d(TAG, "getVersionforKey: verIndex: "+verIndex);
+            //Log.d(TAG, "getVersionforKey: verIndex: "+verIndex);
             cursor.moveToFirst();
             int verNum = cursor.getInt(verIndex);
             Log.d(TAG, "getVersionforKey: verNum: "+verNum);
