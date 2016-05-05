@@ -51,14 +51,13 @@ public class SimpleDynamoProvider extends ContentProvider {
     private static final String DELETE = "DELETE";
     private static final String FORWARDING_PORT = "FORWARDING_PORT";
     private static final String SENDER_PORT = "SENDER_PORT";
-    private static final String GET_REPLICAS = "GET_REPLICAS";
     private static final String KEY = "key";
     private static final String VALUE = "value";
     private static final String VERSION = "version";
     private static final String STAR_SIGN = "*";
     private static final String AT_SIGN = "@";
     private static final String PROVIDER_URI = "content://edu.buffalo.cse.cse486586.simpledynamo.provider";
-    public static final int TIMEOUT_VALUE = 3000;
+    public static final int TIMEOUT_VALUE = 5000;
     private static LinkedList<String> ringFormation = new LinkedList<String>(Arrays.asList("5562","5556","5554","5558","5560"));
     private static String[] avd = {"5562","5556","5554","5558","5560"};
     private static int readSuccCount;
@@ -70,7 +69,7 @@ public class SimpleDynamoProvider extends ContentProvider {
 
 
     //private Executor myExec = Executors.newSingleThreadExecutor();
-    private Executor myExec = Executors.newFixedThreadPool(15);
+    private Executor myExec = Executors.newFixedThreadPool(8);
     //private Executor myExec2 = Executors.newFixedThreadPool(15);
 
     public static class KeyValueOpenHelper extends SQLiteOpenHelper {
@@ -311,17 +310,21 @@ public class SimpleDynamoProvider extends ContentProvider {
     public Uri myInsert(Uri uri, ContentValues values) {
         Log.d(TAG, "myInsert: key: "+ values.getAsString(KEY)+" value: "+values.getAsString(VALUE));
 
-        long row = database.insertWithOnConflict(KEYVALUE_TABLE_NAME, "", values, SQLiteDatabase.CONFLICT_REPLACE);
-        Log.d(TAG, "insert: row: " + row);
-        Uri newUri = uri;
-        if (row > 0) {
-            newUri = ContentUris.withAppendedId(uri, row);
-            if (getContext() != null) {
-                getContext().getContentResolver().notifyChange(newUri, null);
+        if(database != null) {
+            long row = database.insertWithOnConflict(KEYVALUE_TABLE_NAME, "", values, SQLiteDatabase.CONFLICT_REPLACE);
+            Log.d(TAG, "insert: row: " + row);
+            Uri newUri = uri;
+            if (row > 0) {
+                newUri = ContentUris.withAppendedId(uri, row);
+                if (getContext() != null) {
+                    getContext().getContentResolver().notifyChange(newUri, null);
+                }
             }
+            return newUri;
         }
 
-        return newUri;
+
+        return null;
     }
 
 
@@ -653,13 +656,15 @@ public class SimpleDynamoProvider extends ContentProvider {
             selection = "1==1";
         else
             selection = "key=" + "'" + selection + "'"; // appending the key sent to the Where clause
-
-        Cursor cursor = queryBuilder.query(database, null, selection, null, null, null, null);
-        if (getContext() != null) {
-            cursor.setNotificationUri(getContext().getContentResolver(), uri);
+        if(queryBuilder != null && database != null) {
+            Cursor cursor = queryBuilder.query(database, null, selection, null, null, null, null);
+            if (getContext() != null) {
+                cursor.setNotificationUri(getContext().getContentResolver(), uri);
+            }
+            Log.d(TAG, "myQuery: cursor No of rows: " + cursor.getCount());
+            return cursor;
         }
-        Log.d(TAG, "myQuery: cursor No of rows: " + cursor.getCount());
-        return cursor;
+        return null;
     }
 
     private int getVersionforKey(String key){
@@ -667,17 +672,20 @@ public class SimpleDynamoProvider extends ContentProvider {
 
         String sql = "SELECT "+VERSION+" FROM "+KEYVALUE_TABLE_NAME+" WHERE "+KEY+"="+"'"+key+"'";
         //Log.d(TAG, "getVersionforKey: sql: "+sql);
-        Cursor cursor = database.rawQuery(sql, null);
-        if(cursor.getCount() <= 0){
-            return -1;
-        }else {
-            int verIndex = cursor.getColumnIndex(VERSION);
-            //Log.d(TAG, "getVersionforKey: verIndex: "+verIndex);
-            cursor.moveToFirst();
-            int verNum = cursor.getInt(verIndex);
-            Log.d(TAG, "getVersionforKey: verNum: "+verNum);
-            return verNum;
+        if(database != null) {
+            Cursor cursor = database.rawQuery(sql, null);
+            if(cursor.getCount() <= 0){
+                return -1;
+            }else {
+                int verIndex = cursor.getColumnIndex(VERSION);
+                //Log.d(TAG, "getVersionforKey: verIndex: "+verIndex);
+                cursor.moveToFirst();
+                int verNum = cursor.getInt(verIndex);
+                Log.d(TAG, "getVersionforKey: verNum: "+verNum);
+                return verNum;
+            }
         }
+        return -1;
     }
 
 	@Override
@@ -688,9 +696,10 @@ public class SimpleDynamoProvider extends ContentProvider {
 	}
 
     private JSONArray cur2Json(Cursor cursor) throws JSONException{
+        Log.d(TAG, "cur2Json: cursor: "+cursor);
 
         JSONArray resultSet = new JSONArray();
-        if(cursor.getCount() <= 0){
+        if(cursor == null || cursor.getCount() <= 0){
             return resultSet;
         }
         cursor.moveToFirst();
